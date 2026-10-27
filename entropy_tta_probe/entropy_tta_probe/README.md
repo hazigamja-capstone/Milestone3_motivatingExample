@@ -50,8 +50,13 @@ ImageNet-A/R은 폴더에 있는 200개 wnid만 라벨 공간으로 씁니다(TP
 
 ```bash
 pip install -r requirements.txt
-bash run_all.sh /path/to/DATA RN50        # 전체
+bash run_all.sh /path/to/DATA RN50        # 전체 (Linux / macOS)
 ```
+Windows PowerShell: `powershell -ExecutionPolicy Bypass -File .\run_all.ps1 -Data "D:\DATA" -Arch RN50`
+
+**Colab**: `colab_run.ipynb`를 열고 위에서부터 실행합니다. 데이터셋 다운로드(공개 링크 + CoOp split json),
+ImageNet-V2-C 생성(ImageNet-C 공식 corruption 수식을 V2 이미지에 적용, 공식 ImageNet-C 아님), 단계별 실행, 결과 표시까지 포함합니다.
+Colab에서 GitHub의 노트북을 열면 저장소 코드는 함께 오지 않으므로, 저장소 폴더를 Drive의 `MyDrive/entropy_tta_probe`에 두거나 노트북 0번 셀의 `REPO_DIR`을 지정하세요.
 개별 실행 예:
 ```bash
 python experiments/cache_features.py --data_root DATA --datasets swapprompt imagenet_c:all

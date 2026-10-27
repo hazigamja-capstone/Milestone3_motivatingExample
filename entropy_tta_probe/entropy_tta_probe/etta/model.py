@@ -46,13 +46,20 @@ class CLIPBundle:
 
     @torch.no_grad()
     def text_features(self, classnames: List[str], templates=("a photo of a {}.",)) -> torch.Tensor:
-        """Zero-shot classifier; with several templates the normalised embeddings are averaged (CLIP ensemble)."""
+        """Zero-shot classifier; with several templates the normalised embeddings are averaged (CLIP ensemble).
+        Cached per (classnames, templates): ImageNet-C/V2-C splits share the same 1000 class names."""
+        if not hasattr(self, "_tf_cache"):
+            self._tf_cache = {}
+        key = (tuple(classnames), tuple(templates))
+        if key in self._tf_cache:
+            return self._tf_cache[key]
         out = []
         for c in classnames:
             tok = self.tokenizer([t.format(c) for t in templates]).to(self.device)
             e = F.normalize(self.model.encode_text(tok).float(), dim=-1).mean(0)
             out.append(F.normalize(e, dim=-1))
-        return torch.stack(out)
+        self._tf_cache[key] = torch.stack(out)
+        return self._tf_cache[key]
 
 
 class PromptLearner(nn.Module):
@@ -66,6 +73,11 @@ class PromptLearner(nn.Module):
         n_ctx = int((tok([ctx_init])[0] != 0).sum().item()) - 2
         prompts = [f"{ctx_init} {c}." for c in classnames]
         tokenized = tok(prompts).to(dev)
+        # The text transformer is causal, so positions after EOT never influence the EOT feature.
+        # Truncating to the longest EOT position gives identical outputs with ~5x less memory
+        # (needed to back-propagate through 1000 class prompts on a 16GB GPU).
+        self.seq_len = int(tokenized.argmax(dim=-1).max().item()) + 1
+        tokenized = tokenized[:, : self.seq_len]
         with torch.no_grad():
             emb = m.token_embedding(tokenized).float()
         self.register_buffer("tokenized", tokenized)
@@ -84,14 +96,16 @@ class PromptLearner(nn.Module):
         m = self.bundle.model
         C = self.prefix.shape[0]
         cast = m.transformer.get_cast_dtype()
+        L = self.seq_len
         x = torch.cat([self.prefix, self.ctx.unsqueeze(0).expand(C, -1, -1), self.suffix], dim=1).to(cast)
-        x = x + m.positional_embedding.to(cast)
+        x = x + m.positional_embedding[:L].to(cast)
+        mask = m.attn_mask[:L, :L] if m.attn_mask is not None else None
         if not getattr(m.transformer, "batch_first", True):
             x = x.permute(1, 0, 2)
-            x = m.transformer(x, attn_mask=m.attn_mask)
+            x = m.transformer(x, attn_mask=mask)
             x = x.permute(1, 0, 2)
         else:
-            x = m.transformer(x, attn_mask=m.attn_mask)
+            x = m.transformer(x, attn_mask=mask)
         x = m.ln_final(x)
         x = x[torch.arange(C, device=x.device), self.tokenized.argmax(dim=-1)]
         proj = m.text_projection

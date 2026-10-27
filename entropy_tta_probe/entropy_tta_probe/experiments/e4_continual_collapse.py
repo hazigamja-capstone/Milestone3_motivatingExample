@@ -180,7 +180,10 @@ if __name__ == "__main__":
 
     df = pd.DataFrame(records, columns=["dataset", "index", "label", "pred", "conf", "entropy", "zs_pred"])
     df.to_csv(os.path.join(od, "stream.csv.gz"), index=False)
-    win = window_stats(df, args.window)
+    window = min(args.window, max(2, len(df) // 10))  # short streams: keep ~10 windows
+    if window != args.window:
+        print(f"stream has {len(df)} samples -> window {args.window} reduced to {window}")
+    win = window_stats(df, window)
     win.to_csv(os.path.join(od, "windows.csv"), index=False)
 
     # ---- final re-evaluation with the adapted parameters
