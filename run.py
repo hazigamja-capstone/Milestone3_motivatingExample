@@ -7,6 +7,7 @@ import argparse
 import copy
 import json
 import os
+import shutil
 import tarfile
 import time
 import urllib.request
@@ -29,8 +30,11 @@ MEAN = torch.tensor([0.48145466, 0.4578275, 0.40821073]).view(1, 3, 1, 1)
 STD = torch.tensor([0.26862954, 0.26130258, 0.27577711]).view(1, 3, 1, 1)
 
 
-def load_v2(root):
-    """V2 1만 장을 224x224 uint8로 한 번만 디코딩해서 캐시한다 (약 1.5GB)."""
+def load_v2(root, v2_tar=""):
+    """V2 1만 장을 224x224 uint8로 한 번만 디코딩해서 캐시한다 (약 1.5GB).
+
+    v2_tar: 마운트한 드라이브의 imagenetv2-matched-frequency.tar.gz 경로. 비우면 내려받는다.
+    """
     cache_x, cache_y = os.path.join(root, "v2_224_x.npy"), os.path.join(root, "v2_224_y.npy")
     if os.path.exists(cache_x):
         return np.load(cache_x, mmap_mode="r"), np.load(cache_y)
@@ -38,13 +42,17 @@ def load_v2(root):
     if not os.path.isdir(d):
         os.makedirs(root, exist_ok=True)
         tgz = os.path.join(root, "v2.tar.gz")
-        print("ImageNet-V2 다운로드 중 (1.2GB)")
-        try:  # 팀 드라이브 데이터셋 폴더에 있는 같은 파일
-            import gdown
-            gdown.download(id=V2_DRIVE_ID, output=tgz, quiet=False)
-        except Exception as e:
-            print("드라이브 다운로드 실패, HuggingFace에서 받음:", e)
-            urllib.request.urlretrieve(V2_URL, tgz)
+        if v2_tar:
+            print("드라이브에서 로컬 디스크로 복사 중:", v2_tar)
+            shutil.copy(v2_tar, tgz)  # 드라이브에서 바로 풀면 느려서 먼저 복사
+        else:
+            print("ImageNet-V2 다운로드 중 (1.2GB)")
+            try:  # 팀 드라이브 데이터셋 폴더에 있는 같은 파일
+                import gdown
+                gdown.download(id=V2_DRIVE_ID, output=tgz, quiet=False)
+            except Exception as e:
+                print("드라이브 다운로드 실패, HuggingFace에서 받음:", e)
+                urllib.request.urlretrieve(V2_URL, tgz)
         with tarfile.open(tgz) as t:
             t.extractall(root)
         os.remove(tgz)
@@ -107,6 +115,7 @@ def main():
     ap.add_argument("--limit_batches", type=int, default=0, help="도메인당 batch 수 제한 (스모크 테스트)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--data_root", default="data")
+    ap.add_argument("--v2_tar", default="", help="마운트한 드라이브의 V2 tar.gz 경로")
     ap.add_argument("--out", default="outputs")
     ap.add_argument("--tag", default="")
     args = ap.parse_args()
@@ -114,7 +123,7 @@ def main():
     torch.manual_seed(args.seed)
     dev = "cuda"
     os.makedirs(args.out, exist_ok=True)
-    X, Y = load_v2(args.data_root)
+    X, Y = load_v2(args.data_root, args.v2_tar)
 
     clip, _, _ = open_clip.create_model_and_transforms(args.model, pretrained="openai")
     clip = clip.to(dev).eval()
