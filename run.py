@@ -85,7 +85,7 @@ def dirichlet_order(idx, y, alpha, n_slots, rng):
 
 @torch.no_grad()
 def text_features(model, name, device, cache_dir):
-    path = os.path.join(cache_dir, f"text_{name}.pt")
+    path = os.path.join(cache_dir, f"text_{name}_quickgelu.pt")
     if os.path.exists(path):
         return torch.load(path).to(device)
     tok = open_clip.get_tokenizer(name)
@@ -125,7 +125,7 @@ def main():
     os.makedirs(args.out, exist_ok=True)
     X, Y = load_v2(args.data_root, args.v2_tar)
 
-    clip, _, _ = open_clip.create_model_and_transforms(args.model, pretrained="openai")
+    clip, _, _ = open_clip.create_model_and_transforms(args.model, pretrained="openai", force_quick_gelu=True)
     clip = clip.to(dev).eval()
     text = text_features(clip, args.model, dev, args.out)
     if args.grad_ckpt:
