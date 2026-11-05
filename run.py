@@ -21,9 +21,11 @@ from PIL import Image
 from torchvision import transforms as T
 
 from corruptions import DOMAINS, corrupt
+from prepare_inc import prepare as prepare_inc
 from methods import METHODS, CLIPClassifier, entropy
 
 V2_URL = "https://huggingface.co/datasets/vaishaal/ImageNetV2/resolve/main/imagenetv2-matched-frequency.tar.gz"
+INC_DOMAINS = "gaussian_noise,shot_noise,defocus_blur,contrast,pixelate,jpeg_compression"
 V2_DRIVE_ID = "1HsymsaWYakVTbWaBzXSsGVk9Wf6j682X"
 V2_DIR ="imagenetv2-matched-frequency-format-val"
 MEAN = torch.tensor([0.48145466, 0.4578275, 0.40821073]).view(1, 3, 1, 1)
@@ -105,8 +107,11 @@ def main():
     ap.add_argument("--method", default="sar", choices=list(METHODS))
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--bs", type=int, default=64)
+    ap.add_argument("--dataset", default="imagenet_c", choices=["imagenet_c", "v2c"],
+                    help="imagenet_c: 공식 ImageNet-C에서 클래스당 --per_class장 / v2c: V2에 손상 수식을 직접 적용")
     ap.add_argument("--severity", type=int, default=5)
-    ap.add_argument("--domains", default=",".join(DOMAINS))
+    ap.add_argument("--domains", default="", help="비우면 데이터셋별 기본 도메인")
+    ap.add_argument("--per_class", type=int, default=10, help="imagenet_c에서 손상마다 클래스당 몇 장")
     ap.add_argument("--n_per_domain", type=int, default=10000)
     ap.add_argument("--stream", default="dirichlet", choices=["iid", "dirichlet"])
     ap.add_argument("--alpha", type=float, default=0.01)
@@ -123,7 +128,20 @@ def main():
     torch.manual_seed(args.seed)
     dev = "cuda"
     os.makedirs(args.out, exist_ok=True)
-    X, Y = load_v2(args.data_root, args.v2_tar)
+    if args.dataset == "imagenet_c":
+        domains = (args.domains or INC_DOMAINS).split(",")
+        inc_dir = os.path.join(args.data_root, "imagenet_c")
+        paths = {d: prepare_inc(d, args.severity, args.per_class, inc_dir) for d in domains}  # 모델 로드 전에 다운로드
+
+        def get_domain(dom):
+            xp, yp = paths[dom]
+            return np.load(xp, mmap_mode="r"), np.load(yp), False
+    else:
+        domains = (args.domains or ",".join(DOMAINS)).split(",")
+        X, Y = load_v2(args.data_root, args.v2_tar)
+
+        def get_domain(dom):
+            return X, Y, True
 
     clip, _, _ = open_clip.create_model_and_transforms(args.model, pretrained="openai", force_quick_gelu=True)
     clip = clip.to(dev).eval()
@@ -139,9 +157,9 @@ def main():
     rng = np.random.default_rng(args.seed)
     rec = {k: [] for k in ["y", "dom", "pred_t", "pred_z", "ent_t", "ent_z", "maxp_t", "maxp_z",
                            "kl_tz", "pz_at_t", "pt_at_z"]}
-    domains = args.domains.split(",")
     t0 = time.time()
     for di, dom in enumerate(domains):
+        X, Y, do_corrupt = get_domain(dom)
         idx = rng.choice(len(Y), min(args.n_per_domain, len(Y)), replace=False)
         if args.stream == "dirichlet":
             idx = dirichlet_order(idx, Y[idx], args.alpha, max(1, len(idx) // args.bs), rng)
@@ -154,7 +172,8 @@ def main():
         for b in range(nb):
             sel = idx[b * args.bs:(b + 1) * args.bs]
             x = torch.from_numpy(np.ascontiguousarray(X[sel])).to(dev).float() / 255
-            x = corrupt(x, dom, args.severity, seed=args.seed * 100003 + di * 1009 + b)
+            if do_corrupt:
+                x = corrupt(x, dom, args.severity, seed=args.seed * 100003 + di * 1009 + b)
             x = (x - mean) / std
             y = torch.from_numpy(Y[sel]).to(dev)
 
@@ -178,7 +197,7 @@ def main():
         print(f"[{dom:15s}] TTA {100 * correct_t / n:5.1f}  zero-shot {100 * correct_z / n:5.1f}  "
               f"차이 {100 * (correct_t - correct_z) / n:+5.1f}  ({time.time() - t0:.0f}s)", flush=True)
 
-    name = f"{args.model}_{args.method}_{args.stream}{'_continual' if args.continual else ''}{args.tag}"
+    name = f"{args.dataset}_{args.model}_{args.method}_{args.stream}{'_continual' if args.continual else ''}{args.tag}"
     out = {k: np.concatenate(v) for k, v in rec.items()}
     meta = dict(vars(args), domains=domains, n_resets=getattr(method, "n_resets", 0))
     np.savez_compressed(os.path.join(args.out, name + ".npz"), meta=json.dumps(meta), **out)
