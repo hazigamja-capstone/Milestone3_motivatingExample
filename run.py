@@ -1,7 +1,7 @@
 """TTA 모델과 zero-shot 모델에 같은 스트림을 넣고 샘플마다 기록한다.
 
 예: python run.py --model ViT-B-16 --method sar
-결과: outputs/{model}_{method}_{stream}.npz (샘플 단위 기록, 구간 집계는 analyze.py)
+결과: {out}/{dataset}_{model}_{method}_{stream}_s{seed}_lr{lr}.npz (샘플 단위 기록, 구간 집계는 analyze.py)
 """
 import argparse
 import copy
@@ -156,7 +156,7 @@ def main():
     mean, std = MEAN.to(dev), STD.to(dev)
     rng = np.random.default_rng(args.seed)
     rec = {k: [] for k in ["y", "dom", "pred_t", "pred_z", "ent_t", "ent_z", "maxp_t", "maxp_z",
-                           "kl_tz", "pz_at_t", "pt_at_z"]}
+                           "kl_tz", "pz_at_t", "pt_at_z", "rank_z_at_t"]}
     t0 = time.time()
     for di, dom in enumerate(domains):
         X, Y, do_corrupt = get_domain(dom)
@@ -185,10 +185,12 @@ def main():
                 pt, pz = lt.softmax(1), lz.softmax(1)
                 at, az = pt.argmax(1), pz.argmax(1)
                 kl = (pt * (pt.clamp_min(1e-12).log() - pz.clamp_min(1e-12).log())).sum(1)
+                pz_t = pz.gather(1, at[:, None])
+                rank = (pz > pz_t).sum(1).to(torch.int16)  # zero-shot 순위에서 TTA 답의 위치 (0 = zs 1등)
                 vals = dict(y=y, dom=torch.full_like(y, di), pred_t=at, pred_z=az,
                             ent_t=entropy(lt), ent_z=entropy(lz), maxp_t=pt.max(1).values,
                             maxp_z=pz.max(1).values, kl_tz=kl,
-                            pz_at_t=pz.gather(1, at[:, None])[:, 0], pt_at_z=pt.gather(1, az[:, None])[:, 0])
+                            pz_at_t=pz_t[:, 0], pt_at_z=pt.gather(1, az[:, None])[:, 0], rank_z_at_t=rank)
                 for k, v in vals.items():
                     rec[k].append(v.cpu().numpy())
                 correct_t += (at == y).sum().item()
@@ -197,7 +199,8 @@ def main():
         print(f"[{dom:15s}] TTA {100 * correct_t / n:5.1f}  zero-shot {100 * correct_z / n:5.1f}  "
               f"차이 {100 * (correct_t - correct_z) / n:+5.1f}  ({time.time() - t0:.0f}s)", flush=True)
 
-    name = f"{args.dataset}_{args.model}_{args.method}_{args.stream}{'_continual' if args.continual else ''}{args.tag}"
+    name = f"{args.dataset}_{args.model}_{args.method}_{args.stream}{'_continual' if args.continual else ''}"
+    name += f"_s{args.seed}_lr{args.lr:g}{args.tag}"
     out = {k: np.concatenate(v) for k, v in rec.items()}
     meta = dict(vars(args), domains=domains, n_resets=getattr(method, "n_resets", 0))
     np.savez_compressed(os.path.join(args.out, name + ".npz"), meta=json.dumps(meta), **out)
