@@ -4,3 +4,6 @@ __pycache__/
 .venv/
 runs/
 results/
+docs/
+third_party/
+outputs_paper/

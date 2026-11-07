@@ -80,11 +80,21 @@ def stream_shard(i):
 
 
 def prepare(corruption, severity, per_class, out_dir, seed=0, limit_classes=0):
+    """스트리밍으로 받아 디스크에 캐시하고 경로를 돌려준다. 캐시가 있으면 바로 돌려준다."""
     x_path = os.path.join(out_dir, f"{corruption}_{severity}_x.npy")
     y_path = os.path.join(out_dir, f"{corruption}_{severity}_y.npy")
     if os.path.exists(x_path):
         return x_path, y_path
     os.makedirs(out_dir, exist_ok=True)
+    x, y = load(corruption, severity, per_class, seed, limit_classes)
+    np.save(x_path, x)
+    np.save(y_path, y)
+    print(f"[{corruption}_{severity}] 저장 {x.shape} -> {x_path}", flush=True)
+    return x_path, y_path
+
+
+def load(corruption, severity, per_class, seed=0, limit_classes=0):
+    """스트리밍으로 받아 메모리에만 올린다 (디스크에 저장하지 않음). 반환: x (N,3,224,224) uint8, y (N,)"""
     split = f"{corruption}_{severity}"
     k = CORRUPTIONS.index(corruption) * 5 + (severity - 1)
     first, last = k * PER_SPLIT, (k + 1) * PER_SPLIT - 1
@@ -132,10 +142,7 @@ def prepare(corruption, severity, per_class, out_dir, seed=0, limit_classes=0):
             break
     x, y = np.stack(xs), np.array(ys)
     assert len(y) == n_cls * per_class, f"{split}: {len(y)}장만 모임"
-    np.save(x_path, x)
-    np.save(y_path, y)
-    print(f"[{split}] 저장 {x.shape} -> {x_path}", flush=True)
-    return x_path, y_path
+    return x, y
 
 
 def main():

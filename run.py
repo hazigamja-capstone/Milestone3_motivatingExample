@@ -1,6 +1,7 @@
 """TTA 모델과 zero-shot 모델에 같은 스트림을 넣고 샘플마다 기록한다.
 
 예: python run.py --model ViT-B-16 --method sar
+    python run.py --model ViT-L-14 --method eta,sar --seed 0,1,2 --lr 1e-3 --domains defocus_blur --no_cache --grad_ckpt
 결과: {out}/{dataset}_{model}_{method}_{stream}_s{seed}_lr{lr}.npz (샘플 단위 기록, 구간 집계는 analyze.py)
 """
 import argparse
@@ -21,6 +22,7 @@ from PIL import Image
 from torchvision import transforms as T
 
 from corruptions import DOMAINS, corrupt
+from prepare_inc import load as load_inc
 from prepare_inc import prepare as prepare_inc
 from methods import METHODS, CLIPClassifier, entropy
 
@@ -101,48 +103,10 @@ def text_features(model, name, device, cache_dir):
     return feats
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default="ViT-B-16")
-    ap.add_argument("--method", default="sar", choices=list(METHODS))
-    ap.add_argument("--lr", type=float, default=1e-3)
-    ap.add_argument("--bs", type=int, default=64)
-    ap.add_argument("--dataset", default="imagenet_c", choices=["imagenet_c", "v2c"],
-                    help="imagenet_c: 공식 ImageNet-C에서 클래스당 --per_class장 / v2c: V2에 손상 수식을 직접 적용")
-    ap.add_argument("--severity", type=int, default=5)
-    ap.add_argument("--domains", default="", help="비우면 데이터셋별 기본 도메인")
-    ap.add_argument("--per_class", type=int, default=10, help="imagenet_c에서 손상마다 클래스당 몇 장")
-    ap.add_argument("--n_per_domain", type=int, default=10000)
-    ap.add_argument("--stream", default="dirichlet", choices=["iid", "dirichlet"])
-    ap.add_argument("--alpha", type=float, default=0.01)
-    ap.add_argument("--continual", action="store_true", help="도메인이 바뀌어도 모델을 초기화하지 않음")
-    ap.add_argument("--grad_ckpt", action="store_true", help="메모리가 모자랄 때 (ViT-L)")
-    ap.add_argument("--limit_batches", type=int, default=0, help="도메인당 batch 수 제한 (스모크 테스트)")
-    ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--data_root", default="data")
-    ap.add_argument("--v2_tar", default="", help="마운트한 드라이브의 V2 tar.gz 경로")
-    ap.add_argument("--out", default="outputs")
-    ap.add_argument("--tag", default="")
-    args = ap.parse_args()
-
+def run_one(args, domains, get_domain, dev="cuda"):
+    """args.method / args.seed / args.lr 한 조합을 돌리고 npz로 저장한다."""
     torch.manual_seed(args.seed)
-    dev = "cuda"
-    os.makedirs(args.out, exist_ok=True)
-    if args.dataset == "imagenet_c":
-        domains = (args.domains or INC_DOMAINS).split(",")
-        inc_dir = os.path.join(args.data_root, "imagenet_c")
-        paths = {d: prepare_inc(d, args.severity, args.per_class, inc_dir) for d in domains}  # 모델 로드 전에 다운로드
-
-        def get_domain(dom):
-            xp, yp = paths[dom]
-            return np.load(xp, mmap_mode="r"), np.load(yp), False
-    else:
-        domains = (args.domains or ",".join(DOMAINS)).split(",")
-        X, Y = load_v2(args.data_root, args.v2_tar)
-
-        def get_domain(dom):
-            return X, Y, True
-
+    print(f"  GPU 메모리 사용 중 {torch.cuda.memory_allocated() / 2**30:.2f}GB (시작 시)", flush=True)
     clip, _, _ = open_clip.create_model_and_transforms(args.model, pretrained="openai", force_quick_gelu=True)
     clip = clip.to(dev).eval()
     text = text_features(clip, args.model, dev, args.out)
@@ -199,12 +163,90 @@ def main():
         print(f"[{dom:15s}] TTA {100 * correct_t / n:5.1f}  zero-shot {100 * correct_z / n:5.1f}  "
               f"차이 {100 * (correct_t - correct_z) / n:+5.1f}  ({time.time() - t0:.0f}s)", flush=True)
 
-    name = f"{args.dataset}_{args.model}_{args.method}_{args.stream}{'_continual' if args.continual else ''}"
-    name += f"_s{args.seed}_lr{args.lr:g}{args.tag}"
     out = {k: np.concatenate(v) for k, v in rec.items()}
     meta = dict(vars(args), domains=domains, n_resets=getattr(method, "n_resets", 0))
-    np.savez_compressed(os.path.join(args.out, name + ".npz"), meta=json.dumps(meta), **out)
-    print("저장:", os.path.join(args.out, name + ".npz"), "| SAR 복구 횟수:", meta["n_resets"])
+    path = out_path(args)
+    np.savez_compressed(path, meta=json.dumps(meta), **out)
+    print("저장:", path, "| SAR 복구 횟수:", meta["n_resets"], flush=True)
+    del method, net, zs_net, clip
+    torch.cuda.empty_cache()
+
+
+def out_path(args):
+    name = f"{args.dataset}_{args.model}_{args.method}_{args.stream}{'_continual' if args.continual else ''}"
+    name += f"_s{args.seed}_lr{args.lr:g}{args.tag}"
+    return os.path.join(args.out, name + ".npz")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--model", default="ViT-B-16")
+    ap.add_argument("--method", default="sar", help=f"쉼표로 여러 개: {','.join(METHODS)}")
+    ap.add_argument("--lr", default="1e-3", help="쉼표로 여러 개")
+    ap.add_argument("--seed", default="0", help="쉼표로 여러 개")
+    ap.add_argument("--bs", type=int, default=64)
+    ap.add_argument("--dataset", default="imagenet_c", choices=["imagenet_c", "v2c"],
+                    help="imagenet_c: 공식 ImageNet-C에서 클래스당 --per_class장 / v2c: V2에 손상 수식을 직접 적용")
+    ap.add_argument("--severity", type=int, default=5)
+    ap.add_argument("--domains", default="", help="비우면 데이터셋별 기본 도메인")
+    ap.add_argument("--per_class", type=int, default=10, help="imagenet_c에서 손상마다 클래스당 몇 장")
+    ap.add_argument("--no_cache", action="store_true",
+                    help="imagenet_c를 디스크에 저장하지 않고 HF에서 받아 메모리에만 올림")
+    ap.add_argument("--limit_classes", type=int, default=0, help="imagenet_c 앞쪽 클래스만 (스모크 테스트)")
+    ap.add_argument("--n_per_domain", type=int, default=10000)
+    ap.add_argument("--stream", default="dirichlet", choices=["iid", "dirichlet"])
+    ap.add_argument("--alpha", type=float, default=0.01)
+    ap.add_argument("--continual", action="store_true", help="도메인이 바뀌어도 모델을 초기화하지 않음")
+    ap.add_argument("--grad_ckpt", action="store_true", help="메모리가 모자랄 때 (ViT-L)")
+    ap.add_argument("--limit_batches", type=int, default=0, help="도메인당 batch 수 제한 (스모크 테스트)")
+    ap.add_argument("--data_root", default="data")
+    ap.add_argument("--v2_tar", default="", help="마운트한 드라이브의 V2 tar.gz 경로")
+    ap.add_argument("--out", default="outputs")
+    ap.add_argument("--tag", default="")
+    args = ap.parse_args()
+
+    # 조합 목록. 결과 파일이 이미 있으면 건너뛴다 (끊겨도 같은 명령으로 이어서 돌림)
+    combos = []
+    for lr in args.lr.split(","):
+        for seed in args.seed.split(","):
+            for m in args.method.split(","):
+                assert m in METHODS, m
+                a = copy.copy(args)
+                a.method, a.seed, a.lr = m, int(seed), float(lr)
+                if os.path.exists(out_path(a)):
+                    print("있음, 건너뜀:", out_path(a))
+                else:
+                    combos.append(a)
+    if not combos:
+        return
+    os.makedirs(args.out, exist_ok=True)
+
+    # 데이터는 한 번만 준비하고 모든 조합이 같이 쓴다 (모델 로드 전에 다운로드)
+    if args.dataset == "imagenet_c":
+        domains = (args.domains or INC_DOMAINS).split(",")
+        if args.no_cache:
+            mem = {d: load_inc(d, args.severity, args.per_class, limit_classes=args.limit_classes) for d in domains}
+
+            def get_domain(dom):
+                return mem[dom][0], mem[dom][1], False
+        else:
+            inc_dir = os.path.join(args.data_root, "imagenet_c")
+            paths = {d: prepare_inc(d, args.severity, args.per_class, inc_dir, limit_classes=args.limit_classes)
+                     for d in domains}
+
+            def get_domain(dom):
+                xp, yp = paths[dom]
+                return np.load(xp, mmap_mode="r"), np.load(yp), False
+    else:
+        domains = (args.domains or ",".join(DOMAINS)).split(",")
+        X, Y = load_v2(args.data_root, args.v2_tar)
+
+        def get_domain(dom):
+            return X, Y, True
+
+    for i, a in enumerate(combos):
+        print(f"\n[{i + 1}/{len(combos)}] {a.model} {a.method} seed {a.seed} lr {a.lr:g}", flush=True)
+        run_one(a, domains, get_domain)
 
 
 if __name__ == "__main__":
