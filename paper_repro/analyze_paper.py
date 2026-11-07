@@ -208,12 +208,21 @@ def cross_alarm(all_rows, all_events, names, fa, primary):
 # ---------------------------------------------------------------- 출력
 
 def main():
+    global HARM_DELTA
     ap = argparse.ArgumentParser()
     ap.add_argument("runs", nargs="+")
     ap.add_argument("--exclude_seed", type=int, action="append", default=[],
                     help="빈도에서 뺄 1차 실행 seed (조합 선택에 쓴 실행)")
     ap.add_argument("--csv", default="", help="구간 표 저장 폴더")
+    ap.add_argument("--harm_delta", type=float, default=HARM_DELTA,
+                    help=f"손해 구간 기준 (%%p, 기본 {HARM_DELTA:g} = PREREG 4절). 다른 값은 탐색 기준으로만 보고한다 "
+                         "(PREREG 변경 기록 2026-11-08: B3의 약한 손해 사건은 -3)")
     args = ap.parse_args()
+
+    explore = args.harm_delta != HARM_DELTA
+    HARM_DELTA = args.harm_delta  # 사건 찾기와 보정용 비손해 구간(Δ > 기준) 모두 이 값을 따른다
+    if explore:
+        print(f"***** 탐색 기준: 손해 구간 Δ ≤ {HARM_DELTA:g}%p. PREREG 4절 판정이 아니며 통과 판정에 쓰지 않는다 *****")
 
     runs = [rd for r in args.runs for rd in (sorted(glob.glob(r)) or [r]) if os.path.isdir(rd)]
     all_rows, all_events, names, seeds = [], [], [], []
@@ -264,6 +273,8 @@ def main():
         for t in TYPES:
             k = sum(any(e[key] == t for e in all_events[i]) for i in fresh)
             verdict = "판정 불가 (새 seed 3개 미만)" if len(fresh) < 3 else ("통과" if k >= 2 else "실패")
+            if explore:
+                verdict = f"탐색 ({'2개 이상' if k >= 2 else '2개 미만'}, 통과 판정에 쓰지 않음)"
             print(f"  {t:<8}: {k} / {len(fresh)} 실행  → {verdict}")
 
     # 교차 기준 경보

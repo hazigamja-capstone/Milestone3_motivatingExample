@@ -141,7 +141,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--method", default="eta", choices=list(CFG_OF))
     ap.add_argument("--arch", default="ViT-L-14")
-    ap.add_argument("--setting", default="correlated")
+    # iter_split은 손상 하나씩 라벨 정렬로만 내보낸다. 다른 값을 받으면 cfg만 바뀌고 실제 스트림은 그대로라 막는다
+    ap.add_argument("--setting", default="correlated", choices=["correlated"],
+                    help="지금 데이터 로더는 correlated만 지원 (PREREG 변경 기록 2026-11-08)")
     ap.add_argument("--seed", type=int, default=1, help="논문 기본값 1")
     ap.add_argument("--n_domains", type=int, default=15, help="논문 순서의 앞쪽 몇 개 손상까지")
     ap.add_argument("--grad_ckpt", action="store_true", help="6GB GPU용. 계산 결과는 같고 메모리만 줄임")

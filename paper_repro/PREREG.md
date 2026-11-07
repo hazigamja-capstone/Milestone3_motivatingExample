@@ -72,6 +72,87 @@ A Lost Opportunity(Döbler et al., ECCVW 2024)에서 TTA가 zero-shot보다 크�
 
 (확정 이후 바뀐 점을 날짜와 이유와 함께 적는다.)
 
+### 2026-11-08 · 추가 조합 B1–B3 등록 (초안)
+
+> 상태: **초안.** 아래 조합을 하나라도 돌리기 전에 커밋해야 확정된다.
+> 작성자: ____ · 이 항목을 쓸 때 기준 조합(ViT-L/14 + ETA) 결과를 봤는가: ☐ 안 봄 ☐ 봄 (본 범위: ____)
+
+**무엇을 바꾸나:** 기준 조합은 그대로 두고, 손해 사례를 더 확보하기 위한 조합 3개를 추가한다. 1–4절의 본문(목적, 설정, 판정 기준)은 바꾸지 않는다.
+
+**이유:**
+
+1. 기준 조합 하나만으로는 사례 수가 부족할 수 있다. 실험 #2의 조용한 손해는 재현되지 않았다(`run_lr1e-3.log`: defocus, ETA·SAR, seed 0–2 모두 TTA가 zero-shot보다 +1.2~+4.2%p 좋음).
+2. 논문 Table 3(correlated)에는 더 크거나 성격이 다른 손해가 있다. ViT-B/16은 ViT-L/14보다 훨씬 빠르게 돈다.
+3. 붕괴 사례(대조군)와 조용한 손해 후보를 따로 확보해야 사건 유형별로 신호를 비교할 수 있다.
+
+**추가 조합** (모두 ImageNet-C severity 5, `SETTING correlated`, 논문 코드 cfg 기본값 그대로; 학습률 등 실제 값은 실행마다 `meta.json`에 기록됨)
+
+| ID | 모델 + 방법 | 논문 Table 3 ImageNet-C 오류율 (zero-shot → TTA) | 역할 |
+|---|---|---|---|
+| A (기존) | ViT-L/14 + ETA | 58.6 → 77.7 | 기준점 (1–4절 그대로) |
+| B1 | ViT-B/16 + ETA | 73.8 → 88.4 | 큰 손해 사례. A와 같은 방법이라 모델 크기만 다름 |
+| B2 | ViT-B/16 + Tent | 73.8 → 93.9 | 붕괴 대조군. 붕괴로 분류되리라 예상 |
+| B3 | ViT-L/14 + SAR | 58.6 → 60.7 | 조용한 손해 후보. SAR는 붕괴 시 모델을 복구한다 |
+
+논문 수치는 손상 15개 평균이다. 앞쪽 손상 3개에서도 같은 크기의 손해가 나온다는 보장은 없다.
+
+**진행 순서와 seed** (2절과 같은 규칙)
+
+- 각 조합은 먼저 논문 seed 1로, 앞쪽 손상 3개(gaussian_noise, shot_noise, impulse_noise)만 돌린다.
+- 그다음 새 seed **2, 3, 4**로 반복한다. seed는 지금 고정하고 결과를 본 뒤 바꾸지 않는다.
+- 돌리는 순서: B1 → B2 → B3. B3는 SAM 때문에 forward가 두 번이라 가장 느리다.
+- 계산 자원이 모자라 일부만 돌리면, 돌리지 못한 조합과 seed를 그대로 보고한다.
+
+**판정** (4절 기준을 바꾸지 않고 조합마다 따로 적용)
+
+| 항목 | 기준 |
+|---|---|
+| 손해 사건, 사건 유형, 경보, 오경보율 | 4절 그대로 |
+| 재현 통과 | 조합마다 따로. seed 1을 빼고 새 seed 3개 중 2개 이상에서 같은 유형(주 기준)의 사건이 생긴다 |
+| 교차 기준 경보의 기준값 | 같은 조합의 다른 실행에서만 정한다. 조합을 섞지 않는다 |
+| 조합 간 합산 | 하지 않는다. 다른 조합의 사건을 더해 2/3을 채우지 않는다 |
+| 여러 조합 보고 | 통과 여부와 상관없이 A와 B1–B3를 모두 보고한다. 통과한 조합만 골라 쓰지 않는다 |
+| B2 기대 결과 | 붕괴(주 기준). 붕괴가 아니면 그 자체로 보고한다 |
+| B3 사건이 없을 때 | "사건 없음"으로 보고한다. −5%p 기준을 결과를 본 뒤 낮추지 않는다 |
+| B3 탐색 기준 (통과 판정에 쓰지 않음) | 정확도 차이가 −3%p 이하인 구간이 3개 이상 연속이면 "약한 손해 사건"으로 따로 센다. 이때 보정용 비손해 구간도 같은 기준(Δ > −3%p)을 따른다. 탐색 결과로만 보고한다 |
+
+탐색 기준은 `analyze_paper.py --harm_delta -3`으로 돌린다. 기본값(−5)이 아닌 값을 넣으면 출력 맨 위와 재현 판정 줄에 "탐색"이라고 표시되고, 통과/실패 대신 "2개 이상/미만"만 나온다.
+
+**이번 추가에서 뺀 것** (지금 `run_paper.py`로는 돌릴 수 없어 코드를 고쳐야 함)
+
+| 후보 | 근거 | 빼는 이유 |
+|---|---|---|
+| ViT-B/16 + DeYO | 논문 Table 3: 73.8 → 99.7 | `run_paper.py`의 `CFG_OF`에 deyo가 없음 |
+| ViT-L/14 + ETA, ImageNet-D109 | 22.4 → 40.5 | 데이터 로더가 HF ImageNet-C만 지원. DomainNet-126을 따로 받아야 함 |
+| `gradual_correlated`, `mixed_domains_correlated` | ROID (Marsden et al., WACV 2024) | `iter_split`이 손상 하나씩 라벨 정렬로만 내보냄 |
+| CCC | RDumb (Press et al., NeurIPS 2023): CIN-C에서는 안정적이던 ETA가 CCC에서 붕괴 | 별도 webdataset이고 correlated와 함께 쓸 수 없음 |
+
+주의: `run_paper.py --setting`에 `correlated`가 아닌 값을 넘기면 논문 cfg만 바뀌고 데이터는 여전히 라벨 정렬 스트림으로 들어와, 실행 이름과 실제 스트림이 어긋났다. 그래서 `--setting`은 이제 `correlated`만 받는다. 위 후보를 하려면 로더를 먼저 고치고 새 변경 기록을 남긴다.
+
+**실행 명령**
+
+```
+# B1 (메모리가 모자라면 --grad_ckpt를 붙인다. 계산 결과는 같다)
+third_party/.venv_paper/Scripts/python.exe paper_repro/run_paper.py --method eta  --arch ViT-B-16 --n_domains 3 --seed 1
+# B2
+third_party/.venv_paper/Scripts/python.exe paper_repro/run_paper.py --method tent --arch ViT-B-16 --n_domains 3 --seed 1
+# B3
+third_party/.venv_paper/Scripts/python.exe paper_repro/run_paper.py --method sar  --arch ViT-L-14 --n_domains 3 --seed 1 --grad_ckpt
+# 새 seed: 같은 명령에서 --seed 2, 3, 4
+```
+
+**판정 명령** (조합마다 따로)
+
+```
+python paper_repro/analyze_paper.py "outputs_paper/eta_ViT-B-16_correlated_s*"  --exclude_seed 1
+python paper_repro/analyze_paper.py "outputs_paper/tent_ViT-B-16_correlated_s*" --exclude_seed 1
+python paper_repro/analyze_paper.py "outputs_paper/sar_ViT-L-14_correlated_s*"  --exclude_seed 1
+# B3 탐색 기준 (통과 판정에 쓰지 않음)
+python paper_repro/analyze_paper.py "outputs_paper/sar_ViT-L-14_correlated_s*"  --exclude_seed 1 --harm_delta -3
+```
+
+**Colab:** `colab_exp3b.ipynb` (`paper_repro/make_colab.py`로 생성, 브랜치 `seoy_experiments3`를 받음). 노트북 안에서 `COMBO`와 `SEED`만 바꿔 돌린다.
+
 ## 5. 실행 명령
 
 ```
