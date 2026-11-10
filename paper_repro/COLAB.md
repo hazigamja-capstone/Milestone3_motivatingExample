@@ -1,5 +1,11 @@
 # Colab 실행 안내
 
+## 자동 실행 노트북
+
+`colab_exp3_v3_auto.ipynb`는 PHASE/SEED 수동 변경 없이 B1→B2→A→B3의 스모크·기준·보정·동결·확인·평가를 순서대로 실행한다. 기존 `STUDY`를 유지한다. 기존 계획이 있으면 스모크를 건너뛰고, 완료 seed는 원래 실행기가 검증 후 재사용한다. 오류 뒤 작업은 실행하지 않는다. 화면에 로그를 직접 표시한다.
+
+기존 수동 노트북의 과학 소스 payload를 그대로 유지하므로 소스 동결과 이미 생성한 계획을 변경하지 않는다. `python paper_repro/make_auto_colab.py`로 수동 노트북을 감싸 생성한다. 이 변경을 적용하기 위해 기존 수동 노트북의 payload를 재생성하거나 STUDY를 변경할 필요가 없다.
+
 ## 시작
 
 1. **`colab_exp3_v3_ready.ipynb`를 Google Colab에 업로드**한다. A만 기본 선택된 파일은 `colab_exp3.ipynb`다. `colab_exp3b.ipynb`도 같은 내용이며 모든 파일에서 COMBO를 바꿀 수 있다.

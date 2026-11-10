@@ -4,6 +4,8 @@ CLIP 온라인 TTA가 zero-shot보다 해로워지는 상황과 무라벨 감지
 
 ## Colab에서 실행
 
+**단계·seed 자동 실행:** [colab_exp3_v3_auto.ipynb](colab_exp3_v3_auto.ipynb). 첫 설정 셀에 작업 목록이 만들어지며 위에서부터 실행하면 네 조합을 순서대로 완료합니다. 기존 v3 내장 소스를 유지하므로 같은 STUDY의 완료 결과를 재사용합니다. 장시간 작업이며 중단 후 재실행할 수 있습니다.
+
 [Colab에서 v3 노트북 열기](https://colab.research.google.com/github/hazigamja-capstone/Milestone3_motivatingExample/blob/seoy_experiments3/colab_exp3_v3_ready.ipynb)
 
 1. [colab_exp3_v3_ready.ipynb](colab_exp3_v3_ready.ipynb)를 내려받아 **Google Colab → 노트북 업로드**로 엽니다.
