@@ -7,11 +7,14 @@
 
 예 (저장소 루트에서):
   third_party/.venv_paper/Scripts/python.exe paper_repro/run_paper.py --method eta --n_domains 3 --grad_ckpt
-결과: outputs_paper/{method}_{arch}_{setting}_s{seed}/dom{i}_{손상}.npz, state.pt, meta.json
+v3 역할: paper(기준 재현), calibration/confirmation(클래스 분리·순서 무작위화).
+주 실행은 paper_repro/run_plan.py를 사용한다. --data_revision으로 HF SHA를 고정한다.
+결과: outputs_paper/{method}_{arch}_{role}_s{seed}/dom{i}_{손상}.npz, state.pt, meta.json
 """
 import argparse
 import json
 import os
+from pathlib import Path
 import queue
 import random
 import subprocess
@@ -35,7 +38,7 @@ CFG_OF = {"eta": "cfgs/imagenet_c/eta.yaml", "sar": "cfgs/imagenet_c/sar.yaml", 
 
 # ---------------------------------------------------------------- 데이터
 
-def iter_split(corruption, severity, seed, limit_classes=0):
+def source_split(corruption, severity, limit_classes=0):
     """손상 하나의 5만 장을 라벨 순으로 내보낸다 (논문의 correlated: 섞은 뒤 라벨로 정렬 = 클래스 안 순서는 무작위).
 
     HF 샤드는 이미 클래스 순이라, 클래스 하나(50장)를 모아 섞은 뒤 내보낸다. 반환: (클래스, webp 바이트)
@@ -43,7 +46,6 @@ def iter_split(corruption, severity, seed, limit_classes=0):
     split = f"{corruption}_{severity}"
     k = CORRUPTIONS.index(corruption) * 5 + (severity - 1)
     first, last = k * PER_SPLIT, (k + 1) * PER_SPLIT - 1
-    rng = random.Random(seed * 1000 + k)
     buf, cur, seen, stop = [], None, -1, False   # seen: 이미 받은 마지막 샘플 번호
     for sh in range(find_shard(first), find_shard(last) + 1):
         for attempt in range(5):  # 연결이 끊기면 그 샤드를 다시 받되, 이미 받은 샘플은 건너뛴다
@@ -58,11 +60,10 @@ def iter_split(corruption, severity, seed, limit_classes=0):
                         break
                     assert rec["split.txt"].decode().strip() == split, (key, rec["split.txt"])
                     if c != cur and buf:
-                        rng.shuffle(buf)
                         yield from buf
                         buf = []
                     cur, seen = c, idx
-                    buf.append((c, rec["0.webp"]))
+                    buf.append((c, rec["0.webp"], idx - first))
                 break
             except Exception as e:  # noqa: BLE001 (네트워크/tar 오류)
                 if attempt == 4:
@@ -72,11 +73,26 @@ def iter_split(corruption, severity, seed, limit_classes=0):
         if stop:
             break
     if buf:
-        rng.shuffle(buf)
         yield from buf
 
 
-def batches(corruption, severity, seed, preprocess, bs, limit_classes=0, prefetch=8):
+from paper_repro.protocol import VERSION, ROLES, role_classes, domain_order, reorder_stream
+
+
+def iter_split(corruption, severity, seed, limit_classes=0, role="paper"):
+    source = source_split(corruption, severity, limit_classes)
+    cache_root = os.environ.get("TTA_CACHE_DIR")
+    if cache_root:
+        from paper_repro.stream_cache import cached_source
+        import prepare_inc
+        source = cached_source(lambda: source_split(corruption, severity, limit_classes), cache_root,
+                               dict(url=prepare_inc.REPO, corruption=corruption, severity=severity),
+                               n_classes=limit_classes or 1000)
+    yield from reorder_stream(source, role, seed, CORRUPTIONS.index(corruption) * 5 + severity - 1,
+                              limit_classes or 1000)
+
+
+def batches(corruption, severity, seed, preprocess, bs, limit_classes=0, prefetch=8, role="paper"):
     """배경 스레드에서 받아 디코딩하고 배치로 묶는다 (계산과 다운로드를 겹침)."""
     from PIL import Image
     import io
@@ -85,16 +101,17 @@ def batches(corruption, severity, seed, preprocess, bs, limit_classes=0, prefetc
 
     def work():
         try:
-            xs, ys = [], []
-            for c, b in iter_split(corruption, severity, seed, limit_classes):
+            xs, ys, ids = [], [], []
+            for c, b, sample_id in iter_split(corruption, severity, seed, limit_classes, role):
                 im = Image.open(io.BytesIO(b)).convert("RGB")
                 xs.append(preprocess(im))
                 ys.append(c)
+                ids.append(sample_id)
                 if len(xs) == bs:
-                    q.put((torch.stack(xs), torch.tensor(ys)))
-                    xs, ys = [], []
+                    q.put((torch.stack(xs), torch.tensor(ys), torch.tensor(ids)))
+                    xs, ys, ids = [], [], []
             if xs:
-                q.put((torch.stack(xs), torch.tensor(ys)))
+                q.put((torch.stack(xs), torch.tensor(ys), torch.tensor(ids)))
             q.put(None)
         except BaseException as e:  # noqa: BLE001
             q.put(e)
@@ -111,23 +128,8 @@ def batches(corruption, severity, seed, preprocess, bs, limit_classes=0, prefetc
 
 # ---------------------------------------------------------------- 상태 저장 / 복구
 
-STATE_KEYS = ["current_model_probs", "ema", "num_samples_update_1", "num_samples_update_2", "performed_updates"]
-
-
-def save_state(path, tta, done):
-    extra = {k: getattr(tta, k) for k in STATE_KEYS if hasattr(tta, k)}
-    torch.save({"model": tta.model.state_dict(), "optimizer": tta.optimizer.state_dict(),
-                "extra": extra, "done": done}, path + ".tmp")
-    os.replace(path + ".tmp", path)
-
-
-def load_state(path, tta):
-    s = torch.load(path, map_location="cuda")
-    tta.model.load_state_dict(s["model"])
-    tta.optimizer.load_state_dict(s["optimizer"])
-    for k, v in s["extra"].items():
-        setattr(tta, k, v)
-    return s["done"]
+from paper_repro.checkpoint import save_state, load_state
+from paper_repro.run_identity import prepare_run, mark_complete, file_hash, source_hashes
 
 
 # ---------------------------------------------------------------- 실행
@@ -141,21 +143,34 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--method", default="eta", choices=list(CFG_OF))
     ap.add_argument("--arch", default="ViT-L-14")
-    # iter_split은 손상 하나씩 라벨 정렬로만 내보낸다. 다른 값을 받으면 cfg만 바뀌고 실제 스트림은 그대로라 막는다
+    # All roles remain class-block-correlated; v3 roles randomize the block/domain order.
     ap.add_argument("--setting", default="correlated", choices=["correlated"],
-                    help="지금 데이터 로더는 correlated만 지원 (PREREG 변경 기록 2026-11-08)")
+                    help="클래스 블록 correlated 스트림; 역할별 순서는 PREREG v3 참조")
+    ap.add_argument("--role", choices=ROLES, default="paper",
+                    help="paper: reference only; calibration/confirmation: revised class-disjoint shuffled streams")
+    ap.add_argument("--data_revision", required=True, help="Full immutable HF dataset commit SHA")
     ap.add_argument("--seed", type=int, default=1, help="논문 기본값 1")
     ap.add_argument("--n_domains", type=int, default=15, help="논문 순서의 앞쪽 몇 개 손상까지")
-    ap.add_argument("--grad_ckpt", action="store_true", help="6GB GPU용. 계산 결과는 같고 메모리만 줄임")
+    ap.add_argument("--grad_ckpt", action="store_true", help="GPU 메모리 절약; 수치 동등성은 검증 필요")
     ap.add_argument("--limit_classes", type=int, default=0, help="스모크 테스트용")
     ap.add_argument("--limit_batches", type=int, default=0, help="스모크 테스트용")
     ap.add_argument("--out", default=os.path.join(ROOT, "outputs_paper"))
+    ap.add_argument("--checkpoint_batches", type=int, default=100,
+                    help="Save in-progress domain every N batches; 0 disables periodic saves")
     ap.add_argument("--opts", nargs="*", default=[], help="논문 cfg에 그대로 넘길 추가 옵션")
     args = ap.parse_args()
 
-    run_dir = os.path.join(args.out, f"{args.method}_{args.arch}_{args.setting}_s{args.seed}")
+    run_dir = os.path.join(os.path.abspath(args.out), f"{args.method}_{args.arch}_{args.role}_s{args.seed}")
     os.makedirs(run_dir, exist_ok=True)
 
+    if args.n_domains < 1 or not 0 <= args.limit_classes <= 1000 or args.limit_batches < 0 or args.checkpoint_batches < 0:
+        ap.error("domain count must be positive and limits nonnegative")
+
+    if len(args.data_revision) != 40 or any(c not in "0123456789abcdef" for c in args.data_revision):
+        ap.error("data_revision must be a full lowercase 40-character commit SHA")
+    import prepare_inc
+    prepare_inc.REPO = prepare_inc.REPO.replace("/resolve/main/", f"/resolve/{args.data_revision}/")
+    prepare_inc._start_cache.clear()
     os.chdir(PAPER)  # 논문 코드는 상대 경로(robustbench/data 등)를 쓴다
     sys.argv = ["test_time.py", "--cfg", CFG_OF[args.method],
                 "MODEL.USE_CLIP", "True", "MODEL.ARCH", args.arch, "MODEL.WEIGHTS", "openai",
@@ -168,7 +183,13 @@ def main():
     from utils.registry import ADAPTATION_REGISTRY
 
     load_cfg_from_args("paper repro")
-    domains = list(cfg.CORRUPTION.TYPE)[:args.n_domains]
+    if args.n_domains > len(cfg.CORRUPTION.TYPE):
+        ap.error("n_domains exceeds configured domain count")
+    expected_method = {"eta": "eata", "sar": "sar", "tent": "tent"}[args.method]
+    if (cfg.MODEL.ADAPTATION != expected_method or cfg.MODEL.ARCH != args.arch
+            or cfg.SETTING != args.setting or cfg.RNG_SEED != args.seed or not cfg.MODEL.USE_CLIP):
+        ap.error("--opts cannot change the method/model/setting/seed declared in the run name")
+    domains = domain_order(list(cfg.CORRUPTION.TYPE)[:args.n_domains], args.role, args.seed)
     severity = cfg.CORRUPTION.SEVERITY[0]
     dev = "cuda"
 
@@ -180,30 +201,74 @@ def main():
         base_model.model.visual.set_grad_checkpointing(True)
     tta = ADAPTATION_REGISTRY.get(cfg.MODEL.ADAPTATION)(cfg=cfg, model=base_model, num_classes=1000)
 
-    meta = dict(vars(args), domains=domains, severity=severity, bs=cfg.TEST.BATCH_SIZE, lr=cfg.OPTIM.LR,
+    meta = dict(vars(args), protocol_version=VERSION,
+                classes=role_classes(args.role, args.limit_classes or 1000), domains=domains, severity=severity, bs=cfg.TEST.BATCH_SIZE,
+                lr=tta.optimizer.param_groups[0]["lr"], cfg_lr=cfg.OPTIM.LR,
+                optimizer_lrs=[group["lr"] for group in tta.optimizer.param_groups],
                 paper_commit=subprocess.run(["git", "-C", PAPER, "rev-parse", "HEAD"], capture_output=True,
                                             text=True).stdout.strip(),
                 torch=torch.__version__, cfg=cfg.dump())
-    with open(os.path.join(run_dir, "meta.json"), "w", encoding="utf-8") as f:
-        json.dump(meta, f, ensure_ascii=False, indent=1, default=str)
+    meta["cuda_runtime"] = torch.version.cuda
+    meta["cudnn"] = torch.backends.cudnn.version()
+    meta["gpu"] = (dict(name=torch.cuda.get_device_name(),
+                        total_memory=torch.cuda.get_device_properties(0).total_memory)
+                   if torch.cuda.is_available() else None)
+    stable_cfg = cfg.clone()
+    stable_cfg.defrost()
+    for key in ("SAVE_DIR", "LOG_TIME", "LOG_DEST"):
+        if key in stable_cfg:
+            del stable_cfg[key]
+    meta["identity"] = dict(n_domains=args.n_domains, method=args.method, arch=args.arch, setting=args.setting, seed=args.seed,
+                            limit_classes=args.limit_classes, limit_batches=args.limit_batches,
+                            checkpoint_batches=args.checkpoint_batches,
+                            grad_ckpt=args.grad_ckpt, cfg=stable_cfg.dump(),
+                            paper_commit=meta["paper_commit"], torch=meta["torch"],
+                            runner_version=VERSION, role=args.role, data_revision=args.data_revision,
+                            classes=role_classes(args.role, args.limit_classes or 1000),
+                            cli_opts=args.opts, source_sha256=source_hashes(ROOT))
+    prepare_run(run_dir, meta)
 
     state_path = os.path.join(run_dir, "state.pt")
-    done = 0
+    done, progress = 0, None
     if os.path.exists(state_path):
-        done = load_state(state_path, tta)
+        done, progress = load_state(state_path, tta, meta["identity"], with_progress=True)
         print(f"이어서 돌림: 손상 {done}개 끝난 상태에서 시작", flush=True)
     else:
         tta.reset()  # 논문: 첫 도메인에서 한 번만 초기화 (continual / correlated)
 
+    for i in range(done):
+        if i >= len(domains) or not os.path.exists(os.path.join(run_dir, f"dom{i:02d}_{domains[i]}.npz")):
+            raise ValueError("Checkpoint references missing domain results")
     t0 = time.time()
     for di in range(done, len(domains)):
         dom = domains[di]
         rec = {k: [] for k in ["y", "pred_t", "pred_z", "ent_t", "ent_z", "maxp_t", "maxp_z",
-                               "kl_tz", "pz_at_t", "pt_at_z", "rank_z_at_t"]}
+                               "kl_tz", "pz_at_t", "pt_at_z", "rank_z_at_t", "sample_id"]}
         ct = cz = n = 0
+        resume_batches = 0
+        partial_path = None
+        if progress is not None:
+            if progress["domain"] != di:
+                raise ValueError("Partial checkpoint domain does not match stream")
+            partial_path = Path(run_dir) / progress["file"]
+            if partial_path.name != progress["file"]:
+                raise ValueError("Invalid partial result path")
+            if file_hash(partial_path) != progress["sha256"]:
+                raise ValueError("Partial results do not match checkpoint hash")
+            with np.load(partial_path, allow_pickle=False) as partial:
+                rec = {k: [partial[k]] for k in rec}
+            resume_batches = progress["batches"]
+            n = len(rec["y"][0])
+            if n != resume_batches * cfg.TEST.BATCH_SIZE:
+                raise ValueError("Partial results do not match checkpoint batch count")
+            ct = int((rec["pred_t"][0] == rec["y"][0]).sum())
+            cz = int((rec["pred_z"][0] == rec["y"][0]).sum())
+            print(f"재개: {dom}, {resume_batches}배치, {n}장", flush=True)
         with torch.no_grad():  # 논문 get_accuracy와 같음 (방법 안에서 enable_grad)
-            for b, (x, y) in enumerate(batches(dom, severity, args.seed, preprocess, cfg.TEST.BATCH_SIZE,
-                                               args.limit_classes)):
+            for b, (x, y, sample_ids) in enumerate(batches(dom, severity, args.seed, preprocess, cfg.TEST.BATCH_SIZE,
+                                               args.limit_classes, role=args.role)):
+                if b < resume_batches:
+                    continue
                 if args.limit_batches and b >= args.limit_batches:
                     break
                 x, y = x.to(dev), y.to(dev)
@@ -213,7 +278,7 @@ def main():
                 pt, pz = lt.softmax(1), lz.softmax(1)
                 at, az = pt.argmax(1), pz.argmax(1)
                 pz_t = pz.gather(1, at[:, None])
-                vals = dict(y=y, pred_t=at, pred_z=az, ent_t=entropy(lt), ent_z=entropy(lz),
+                vals = dict(y=y, sample_id=sample_ids, pred_t=at, pred_z=az, ent_t=entropy(lt), ent_z=entropy(lz),
                             maxp_t=pt.max(1).values, maxp_z=pz.max(1).values,
                             kl_tz=(pt * (pt.clamp_min(1e-12).log() - pz.clamp_min(1e-12).log())).sum(1),
                             pz_at_t=pz_t[:, 0], pt_at_z=pt.gather(1, az[:, None])[:, 0],
@@ -223,15 +288,41 @@ def main():
                 ct += (at == y).sum().item()
                 cz += (az == y).sum().item()
                 n += len(y)
+                if (args.checkpoint_batches and len(y) == cfg.TEST.BATCH_SIZE
+                        and (b + 1) % args.checkpoint_batches == 0):
+                    name = f"partial_dom{di:02d}_b{b + 1:06d}.npz"
+                    target = Path(run_dir) / name
+                    with open(str(target) + ".tmp", "wb") as f:
+                        np.savez_compressed(f, **{k: np.concatenate(v) for k, v in rec.items()})
+                    os.replace(str(target) + ".tmp", target)
+                    save_state(state_path, tta, di, meta["identity"],
+                               progress=dict(domain=di, batches=b + 1, file=name, sha256=file_hash(target)))
+                    if partial_path is not None and partial_path != target:
+                        partial_path.unlink(missing_ok=True)
+                    partial_path = target
                 if (b + 1) % 100 == 0:
                     print(f"  [{dom}] 배치 {b + 1}: TTA {100 * ct / n:.1f} zs {100 * cz / n:.1f} "
                           f"({time.time() - t0:.0f}s)", flush=True)
         out = {k: np.concatenate(v) for k, v in rec.items()}
-        np.savez_compressed(os.path.join(run_dir, f"dom{di:02d}_{dom}.npz"), **out)
-        save_state(state_path, tta, di + 1)
+        if not args.limit_batches:
+            counts = np.bincount(out["y"], minlength=1000)
+            expected = np.zeros(1000, dtype=int)
+            expected[meta["classes"]] = 50
+            if not np.array_equal(counts, expected):
+                raise ValueError("Incomplete domain: expected exactly 50 images per selected class")
+        result_path = os.path.join(run_dir, f"dom{di:02d}_{dom}.npz")
+        with open(result_path + ".tmp", "wb") as f:
+            np.savez_compressed(f, **out)
+        os.replace(result_path + ".tmp", result_path)
+        save_state(state_path, tta, di + 1, meta["identity"])
+        if partial_path is not None:
+            partial_path.unlink(missing_ok=True)
+        progress = None
         print(f"[{di + 1}/{len(domains)} {dom}] TTA {100 * ct / n:.1f}  zero-shot {100 * cz / n:.1f}  "
               f"오류율 TTA {100 - 100 * ct / n:.1f} / zs {100 - 100 * cz / n:.1f}  n={n}  "
               f"({time.time() - t0:.0f}s)", flush=True)
+    if not args.limit_classes and not args.limit_batches:
+        mark_complete(run_dir, meta["identity"], domains)
 
 
 if __name__ == "__main__":
