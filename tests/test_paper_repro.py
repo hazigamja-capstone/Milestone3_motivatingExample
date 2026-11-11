@@ -98,11 +98,13 @@ class AnalysisTests(unittest.TestCase):
 
 
 class IdentityTests(unittest.TestCase):
-    def test_compatible_extension_and_rejected_change_preserve_metadata(self):
+    def test_reconnect_and_rejected_extension_preserve_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:
             meta = dict(identity={"lr":.01}, domains=["a"])
             prepare_run(tmp,meta)
-            prepare_run(tmp,dict(meta,domains=["a","b"]))
+            prepare_run(tmp,meta)
+            with self.assertRaisesRegex(ValueError, "immutable"):
+                prepare_run(tmp,dict(meta,domains=["a","b"]))
             before = (Path(tmp)/"meta.json").read_bytes()
             with self.assertRaises(ValueError):
                 prepare_run(tmp,dict(identity={"lr":.02},domains=["a","b"]))

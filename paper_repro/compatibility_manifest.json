@@ -1,0 +1,39 @@
+{
+  "legacy": {
+    "paper_repro/analyze_paper.py": "56551d6e0b62d4dc471d7343b1f0c0d2df7d03b707e88d2f6acbc66461de23bf",
+    "paper_repro/checkpoint.py": "5f66d3a5029f44264c4b3e51af28f2f9e93ab2e1bb2070bdab51e991a9b46258",
+    "paper_repro/evaluate_detector.py": "f674dade2cc303b73169747cb4d0003ea1af31b00dd49667515d890964f2ff1a",
+    "paper_repro/protocol.py": "5fd7086a30619fedfdca2c0880df7d650be4c80cd0bb5fcb40372ad09b009c2b",
+    "paper_repro/requirements_colab.lock": "c43e89e9b2a0603e48fd22c5f8c125ed4fbf32cd89e861480537bc032b69ae0a",
+    "paper_repro/run_identity.py": "60dca5c12e54d6a8f030590393c929ff18d17ea147c803581bbbc927b05fea20",
+    "paper_repro/run_paper.py": "bb24f873c8fd34c4dc81691f1545e443271dafa6ea76e05154c3df12494b930c",
+    "paper_repro/run_plan.py": "184909bfe190f6e3041685f3fa25d6e1c6dc804a3ede85234948b796f073cd0a",
+    "paper_repro/stream_cache.py": "8d1dc07731985d9f7c8f6a10626b5343e12ddc70739626865c4522655b0062c3",
+    "prepare_inc.py": "c6bc2e3e3ebe89bd5eb4ae7ac74eee75af7f44ebcc209be7ba0288b4db41129f"
+  },
+  "legacy_bundle_sha256": "3910a75414e5080cfe833c592f4c3cdfd322835235df5ada7e25e9c184910f42",
+  "optimized": {
+    "paper_repro/analyze_paper.py": "56551d6e0b62d4dc471d7343b1f0c0d2df7d03b707e88d2f6acbc66461de23bf",
+    "paper_repro/checkpoint.py": "5f66d3a5029f44264c4b3e51af28f2f9e93ab2e1bb2070bdab51e991a9b46258",
+    "paper_repro/colab_bundle.py": "547e6afc01c2c1fef5befaa564ddf57cae4edd72740db26158974250c1b8b62d",
+    "paper_repro/colab_session.py": "4c8c786c9bad3cdc47dacac738bcb798fd03c0a38bd33fd75155574c5e0e20e3",
+    "paper_repro/compatibility.py": "007d3aa36e511f6510eea2067e905a4f6b2528f3d0938ec823bd727baad3e7c7",
+    "paper_repro/evaluate_detector.py": "f674dade2cc303b73169747cb4d0003ea1af31b00dd49667515d890964f2ff1a",
+    "paper_repro/make_colab.py": "ec68659aa47d5c308568f7e098745a0ea4ecc8cd3bc9f655ee465c2ddb5888c5",
+    "paper_repro/performance.py": "b5b6ebc87745b87cd2bf901bece4c461d4f533974982ecb250e3624d9c3956ce",
+    "paper_repro/protocol.py": "5fd7086a30619fedfdca2c0880df7d650be4c80cd0bb5fcb40372ad09b009c2b",
+    "paper_repro/requirements_colab.lock": "c43e89e9b2a0603e48fd22c5f8c125ed4fbf32cd89e861480537bc032b69ae0a",
+    "paper_repro/run_identity.py": "862f03fe00e6607f6fb86c7104dafe1f823f1a2e73be89b3322a9cfd902a28e1",
+    "paper_repro/run_paper.py": "3231e84dcc21f19b14476667c18fafdb4b2b15b3d15ea0a1df73623a09677c53",
+    "paper_repro/run_plan.py": "1570833379dc20a07ba5a956fde6e0ff778f2692ff31d268ea50e4287259c04d",
+    "paper_repro/setup_colab.py": "633e7f8ce61688bf43ffa4c20c0d839c276ee8f0e65cf8c1c588d3bc7ac0b071",
+    "paper_repro/stream_cache.py": "32653133d5faef02d3fc97ecade645e4e7ef88965143a95f1b92471948b41278",
+    "prepare_inc.py": "c6bc2e3e3ebe89bd5eb4ae7ac74eee75af7f44ebcc209be7ba0288b4db41129f",
+    "tests/test_colab_bootstrap.py": "0ff69ceb6c75d4849130449b6ebde51e88c7e04db4dd3f89189bdaa0bf460a1e",
+    "tests/test_colab_checkpoints.py": "2efa781839375b25e0d1a6ce14bf2045820950bc39048dacaf15a1c155e87a19",
+    "tests/test_detector_v3.py": "92f2339f83c9d2151e8c8c8a745408368fc53aa54f6c28b416f8b229d6c29a36",
+    "tests/test_paper_repro.py": "93c2f14c362bc82f4a95a061284597cdc28ab1aa363378ba46a4f6b66de0225a",
+    "tests/test_stream_cache.py": "327ddf15f534d668898f7342b0700efc2fa1f9bb7f43844c516614189dffdc9a"
+  },
+  "version": 1
+}

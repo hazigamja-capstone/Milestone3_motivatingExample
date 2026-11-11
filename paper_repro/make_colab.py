@@ -13,11 +13,14 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def source_archive():
+def source_archive(include_notebook_fixture=False):
     paths = [Path('prepare_inc.py')]
+    if include_notebook_fixture:
+        # The fast bundle's regression suite verifies the immutable legacy payload.
+        paths.append(Path('colab_exp3_v3_ready.ipynb'))
     paths += [p.relative_to(ROOT) for p in sorted((ROOT/'paper_repro').glob('*.py'))]
     paths += [Path('paper_repro')/n for n in ('requirements_paper.txt','requirements_paper_nodeps.txt',
-                                               'requirements_colab.lock')]
+                                               'requirements_colab.lock','compatibility_manifest.json')]
     paths += [p.relative_to(ROOT) for p in sorted((ROOT/'paper_repro').glob('*.md'))]
     paths += [p.relative_to(ROOT) for p in sorted((ROOT/'tests').glob('test_*.py'))]
     buffer = io.BytesIO()

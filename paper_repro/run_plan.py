@@ -12,7 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from paper_repro.protocol import CALIBRATION_SEEDS, CONFIRMATION_SEEDS, VERSION
 from paper_repro.evaluate_detector import check_artifact
-from paper_repro.run_identity import completed_run, source_hashes
+from paper_repro.run_identity import completed_run
+from paper_repro.compatibility import execution_sources, execution_plan_code
 
 COMBOS = {'A': ('eta','ViT-L-14'), 'B1': ('eta','ViT-B-16'),
           'B2': ('tent','ViT-B-16'), 'B3': ('sar','ViT-L-14')}
@@ -81,11 +82,9 @@ def main():
     if dataset is None:
         with dataset_path.open('x') as f:
             json.dump({'data_revision':data_revision},f,indent=2)
-    names = ('run_plan.py','run_paper.py','protocol.py','checkpoint.py','run_identity.py',
-             'analyze_paper.py','evaluate_detector.py','stream_cache.py')
     plan = dict(version=VERSION,combo=args.combo,data_revision=data_revision,grad_ckpt=args.grad_ckpt,
                 n_domains=3,calibration_seeds=list(CALIBRATION_SEEDS),confirmation_seeds=list(CONFIRMATION_SEEDS),
-                code={n:hashlib.sha256((ROOT/'paper_repro'/n).read_bytes()).hexdigest() for n in names},
+                code=execution_plan_code(ROOT, out),
                 prepare_inc_sha256=hashlib.sha256((ROOT/'prepare_inc.py').read_bytes()).hexdigest())
     if old and old != plan:
         parser.error('Frozen plan changed; use a new output root instead of modifying an existing experiment')
@@ -104,9 +103,8 @@ def main():
             if (frozen['signature']['method'] != method or frozen['signature']['arch'] != arch
                     or frozen['signature']['data_revision'] != data_revision):
                 parser.error('Frozen calibration belongs to a different combination or dataset')
-            for name, sha in frozen['signature']['source_sha256'].items():
-                if hashlib.sha256((ROOT/name).read_bytes()).hexdigest() != sha:
-                    parser.error('Frozen calibration was produced by different source code')
+            if frozen['signature']['source_sha256'] != execution_sources(ROOT, out):
+                parser.error('Frozen calibration was produced by different source code')
         if phase == 'freeze' and artifact.exists():
             check_artifact(json.loads(artifact.read_text()))
             print('Reusing frozen calibration:',artifact)
@@ -119,7 +117,7 @@ def main():
                 expected = dict(method=method, arch=arch, role=phase, seed=seed,
                                 data_revision=data_revision, grad_ckpt=args.grad_ckpt,
                                 n_domains=3, torch=torch.__version__, limit_classes=0, limit_batches=0,
-                                checkpoint_batches=100, cli_opts=[], source_sha256=source_hashes(ROOT))
+                                checkpoint_batches=100, cli_opts=[], source_sha256=execution_sources(ROOT, out))
                 run_dir = out / f'{method}_{arch}_{phase}_s{seed}'
                 if completed_run(run_dir, expected):
                     print('SKIP verified complete run:', run_dir, flush=True)

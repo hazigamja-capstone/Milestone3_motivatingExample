@@ -11,15 +11,14 @@ v3 역할: paper(기준 재현), calibration/confirmation(클래스 분리·순�
 주 실행은 paper_repro/run_plan.py를 사용한다. --data_revision으로 HF SHA를 고정한다.
 결과: outputs_paper/{method}_{arch}_{role}_s{seed}/dom{i}_{손상}.npz, state.pt, meta.json
 """
+from contextlib import closing
 import argparse
 import json
 import os
 from pathlib import Path
-import queue
 import random
 import subprocess
 import sys
-import threading
 import time
 
 import numpy as np
@@ -83,53 +82,33 @@ def iter_split(corruption, severity, seed, limit_classes=0, role="paper"):
     source = source_split(corruption, severity, limit_classes)
     cache_root = os.environ.get("TTA_CACHE_DIR")
     if cache_root:
-        from paper_repro.stream_cache import cached_source
+        from paper_repro.stream_cache import cached_ordered_source
         import prepare_inc
-        source = cached_source(lambda: source_split(corruption, severity, limit_classes), cache_root,
+        yield from cached_ordered_source(lambda: source_split(corruption, severity, limit_classes), cache_root,
                                dict(url=prepare_inc.REPO, corruption=corruption, severity=severity),
+                               role=role, seed=seed, domain_index=CORRUPTIONS.index(corruption) * 5 + severity - 1,
                                n_classes=limit_classes or 1000)
+        return
     yield from reorder_stream(source, role, seed, CORRUPTIONS.index(corruption) * 5 + severity - 1,
                               limit_classes or 1000)
 
 
 def batches(corruption, severity, seed, preprocess, bs, limit_classes=0, prefetch=8, role="paper"):
-    """배경 스레드에서 받아 디코딩하고 배치로 묶는다 (계산과 다운로드를 겹침)."""
-    from PIL import Image
-    import io
-
-    q = queue.Queue(maxsize=prefetch)
-
-    def work():
-        try:
-            xs, ys, ids = [], [], []
-            for c, b, sample_id in iter_split(corruption, severity, seed, limit_classes, role):
-                im = Image.open(io.BytesIO(b)).convert("RGB")
-                xs.append(preprocess(im))
-                ys.append(c)
-                ids.append(sample_id)
-                if len(xs) == bs:
-                    q.put((torch.stack(xs), torch.tensor(ys), torch.tensor(ids)))
-                    xs, ys, ids = [], [], []
-            if xs:
-                q.put((torch.stack(xs), torch.tensor(ys), torch.tensor(ids)))
-            q.put(None)
-        except BaseException as e:  # noqa: BLE001
-            q.put(e)
-
-    threading.Thread(target=work, daemon=True).start()
-    while True:
-        item = q.get()
-        if item is None:
-            return
-        if isinstance(item, BaseException):
-            raise item
-        yield item
+    """Ordered deterministic CLIP eval preprocessing with bounded parallel decode."""
+    from paper_repro.performance import deterministic_clip_transform, prefetched_batches
+    if not deterministic_clip_transform(preprocess):
+        raise ValueError("Parallel preprocessing requires the deterministic CLIP eval transform")
+    records = iter_split(corruption, severity, seed, limit_classes, role)
+    workers = min(4, os.cpu_count() or 1)
+    yield from prefetched_batches(records, preprocess, bs, prefetch, workers,
+                                  pin_memory=torch.cuda.is_available())
 
 
 # ---------------------------------------------------------------- 상태 저장 / 복구
 
 from paper_repro.checkpoint import save_state, load_state
-from paper_repro.run_identity import prepare_run, mark_complete, file_hash, source_hashes
+from paper_repro.compatibility import execution_sources
+from paper_repro.run_identity import prepare_run, mark_complete, file_hash
 
 
 # ---------------------------------------------------------------- 실행
@@ -195,7 +174,10 @@ def main():
 
     base_model, preprocess = get_model(cfg, 1000, dev)
     base_model.model_preprocess = preprocess
-    zs_model, _ = get_model(cfg, 1000, dev)  # 같은 가중치의 고정 복사본
+    model_module = sys.modules.get("models.model")
+    from paper_repro.performance import reuse_fixed_text
+    with reuse_fixed_text(model_module, base_model, cfg):
+        zs_model, _ = get_model(cfg, 1000, dev)  # independent visual model; identical frozen text
     zs_model.eval().requires_grad_(False)
     if args.grad_ckpt:
         base_model.model.visual.set_grad_checkpointing(True)
@@ -225,7 +207,7 @@ def main():
                             paper_commit=meta["paper_commit"], torch=meta["torch"],
                             runner_version=VERSION, role=args.role, data_revision=args.data_revision,
                             classes=role_classes(args.role, args.limit_classes or 1000),
-                            cli_opts=args.opts, source_sha256=source_hashes(ROOT))
+                            cli_opts=args.opts, source_sha256=execution_sources(ROOT, args.out))
     prepare_run(run_dir, meta)
 
     state_path = os.path.join(run_dir, "state.pt")
@@ -264,14 +246,14 @@ def main():
             ct = int((rec["pred_t"][0] == rec["y"][0]).sum())
             cz = int((rec["pred_z"][0] == rec["y"][0]).sum())
             print(f"재개: {dom}, {resume_batches}배치, {n}장", flush=True)
-        with torch.no_grad():  # 논문 get_accuracy와 같음 (방법 안에서 enable_grad)
-            for b, (x, y, sample_ids) in enumerate(batches(dom, severity, args.seed, preprocess, cfg.TEST.BATCH_SIZE,
-                                               args.limit_classes, role=args.role)):
+        with torch.no_grad(), closing(batches(dom, severity, args.seed, preprocess, cfg.TEST.BATCH_SIZE,
+                                               args.limit_classes, role=args.role)) as stream:
+            for b, (x, y, sample_ids) in enumerate(stream):
                 if b < resume_batches:
                     continue
                 if args.limit_batches and b >= args.limit_batches:
                     break
-                x, y = x.to(dev), y.to(dev)
+                x, y = x.to(dev, non_blocking=True), y.to(dev, non_blocking=True)
                 with torch.autocast("cuda", dtype=torch.float16):  # TTA 쪽과 같은 혼합 정밀도
                     lz = zs_model(x).float()
                 lt = tta(x).float()

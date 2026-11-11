@@ -9,10 +9,9 @@ def prepare_run(run_dir, meta):
         old = json.loads(path.read_text(encoding="utf-8"))
         if old.get("identity") != meta["identity"]:
             raise ValueError("Existing run has incompatible/legacy metadata; choose a new --out directory.")
-        previous = old.get("domains", [])
-        requested = meta["domains"]
-        if requested[:len(previous)] != previous:
-            raise ValueError("Only extending the same domain prefix is supported.")
+        if old.get("domains", []) != meta["domains"]:
+            raise ValueError("Existing metadata is immutable; use a new output root for different domains.")
+        return
     elif list(Path(run_dir).glob("dom*.npz")) or (Path(run_dir) / "state.pt").exists():
         raise ValueError("Results without metadata cannot be resumed safely.")
     tmp = path.with_suffix(".json.tmp")
@@ -58,7 +57,8 @@ def completed_run(run_dir, expected):
 
 
 def source_hashes(root):
-    names = ("run_paper.py", "checkpoint.py", "run_identity.py", "protocol.py", "stream_cache.py")
+    names = ("run_paper.py", "checkpoint.py", "run_identity.py", "protocol.py", "stream_cache.py",
+             "performance.py", "compatibility.py", "compatibility_manifest.json")
     paths = ["paper_repro/" + name for name in names] + ["prepare_inc.py"]
     lock = Path(root) / "paper_repro/requirements_colab.lock"
     if lock.exists():

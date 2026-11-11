@@ -4,6 +4,7 @@ Use a dedicated local disk directory, not Google Drive. The cache identity must
 include immutable dataset revision, corruption and severity; role/order seed are
 intentionally absent so all experiment runs reuse the same downloaded bytes.
 """
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -96,15 +97,8 @@ def _records(path):
             yield label, encoded, sample_id
 
 
-def cached_source(source_factory, cache_root, key, n_classes=1000):
-    """Yield source bytes; download only when absent or corrupt.
-
-    All compressed bytes are verified against the completion manifest before any
-    record is yielded, so a corrupt later record cannot duplicate earlier samples
-    during rebuilding. An existing cache costs one sequential SHA-256 pass plus
-    one sequential read. Creation uses a per-key process lock and a complete
-    staging directory renamed into place; failed downloads are never reused.
-    """
+@contextmanager
+def _verified_cache(source_factory, cache_root, key, n_classes):
     # Colab is Linux. flock avoids duplicate downloads in concurrent local jobs.
     import fcntl
 
@@ -128,4 +122,49 @@ def cached_source(source_factory, cache_root, key, n_classes=1000):
                     shutil.rmtree(staging)
         # Keep the lock while iterating, so another cache user cannot replace the
         # directory while these verified records are being read.
+        yield target
+
+
+def cached_source(source_factory, cache_root, key, n_classes=1000):
+    """Yield a fully SHA-256 verified source; retain the v1 cache on disk."""
+    with _verified_cache(source_factory, cache_root, key, n_classes) as target:
         yield from _records(target/'records.bin')
+
+
+def cached_ordered_source(source_factory, cache_root, key, role, seed, domain_index, n_classes=1000):
+    """Read class permutations directly from verified v1 compressed bytes.
+
+    Keep one small offset index in RAM instead of writing and rereading every
+    selected class to temporary pickle files. Validation still reads ALL bytes
+    on each opening. The cache format/identity and the RNG calls match v3.
+    """
+    import mmap
+    import random
+    from paper_repro.protocol import role_classes
+    selected = set(role_classes(role, n_classes))
+    order = sorted(selected)
+    rng = random.Random(seed * 1000 + domain_index)
+    if role != 'paper':
+        rng.shuffle(order)
+    with _verified_cache(source_factory, cache_root, key, n_classes) as target:
+        with (target/'records.bin').open('rb') as stream:
+            with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+                blocks = {c: [] for c in selected}
+                offset = 0
+                while offset < len(data):
+                    if len(data) - offset < _HEADER.size:
+                        raise ValueError('Truncated source cache header')
+                    label, sample_id, size = _HEADER.unpack_from(data, offset)
+                    offset += _HEADER.size
+                    if offset + size > len(data):
+                        raise ValueError('Truncated source cache image')
+                    if label in selected:
+                        blocks[label].append((offset, size, sample_id))
+                    offset += size
+                for label in order:
+                    items = blocks[label]
+                    if len(items) != 50:
+                        raise ValueError(f'Missing/incomplete class {label}')
+                    rng.shuffle(items)
+                    for offset, size, sample_id in items:
+                        yield label, data[offset:offset+size], sample_id
