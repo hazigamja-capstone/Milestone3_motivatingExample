@@ -1,3 +1,11 @@
+# 2026-11-12 · auto 노트북 SAR 정밀도 오류 수정
+
+- 사용자 로그: B3 SAR에서 FP32 입력과 FP16 CLIP conv1 가중치가 충돌했다. MIXED_PRECISION 설정만으로 SAR 내부 forward에 autocast가 적용되지 않는다.
+- run_paper.py의 TTA 호출에 CUDA FP16 autocast를 적용하고 auto 노트북 내장 runner에도 같은 수정을 포함했다. 다른 내장 파일과 기존 ready/fast 노트북은 유지했다.
+- 기본 STUDY를 motivating_exp3_v3_sar_fp16fix로 분리했다. 이전 source_bundle/결과/체크포인트는 삭제하거나 소급 재사용하지 않는다. 수정 버전으로 시작한 실행은 같은 새 STUDY에서 재개한다.
+- 검증: auto 2개 + bootstrap 6개 테스트 통과. 내장 아카이브의 runner 외 파일 보존, 해시, 셀 구문, autocast 호출 경로, 작업 순서와 실패 중단을 확인했다. 현재 머신에 torch/CUDA가 없어 실제 GPU 수치·SAR 업데이트 검증은 미실행.
+- 다음: 수정한 auto 노트북을 Colab GPU에 업로드하고 위에서부터 실행하여 B3 smoke를 확인한다.
+
 # 2026-11-10 · 자동 단계 실행
 
 - PHASE/SEED를 직접 바꾸지 않는 자동 노트북을 추가했다. 기존 과학 소스 payload를 유지해 완료된 B1 paper와 동결 계획을 재사용한다. 로그를 호스트 셀로 전달하며 실패 시 다음 작업을 중지한다. 자동 작업64개의 순서·스모크 건너뛰기·실패 중단을 검증했다.

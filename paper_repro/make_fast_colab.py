@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def fast_notebook(original, payload=None):
-    notebook = automatic_notebook(original)
+    notebook = automatic_notebook(original, fix_precision=False)
     payload = source_archive(include_notebook_fixture=True) if payload is None else payload
     digest = hashlib.sha256(payload).hexdigest()
     notebook['cells'][0]['source'] += ['\n## 입력 파이프라인 최적화\n',

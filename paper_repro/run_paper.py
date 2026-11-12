@@ -256,7 +256,9 @@ def main():
                 x, y = x.to(dev, non_blocking=True), y.to(dev, non_blocking=True)
                 with torch.autocast("cuda", dtype=torch.float16):  # TTA 쪽과 같은 혼합 정밀도
                     lz = zs_model(x).float()
-                lt = tta(x).float()
+                # SAR does not enter autocast internally (unlike Tent/EATA).
+                with torch.autocast("cuda", dtype=torch.float16):
+                    lt = tta(x).float()
                 pt, pz = lt.softmax(1), lz.softmax(1)
                 at, az = pt.argmax(1), pz.argmax(1)
                 pz_t = pz.gather(1, at[:, None])
